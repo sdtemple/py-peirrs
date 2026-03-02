@@ -1,265 +1,295 @@
+"""Stochastic epidemic model simulation functions."""
+
 import numpy as np
+from . import utils
+from .estimators import peirr_removal_rate
 
-# simulation of stochastic epidemic models
 
-def simulate_sem(beta, gamma, N, m=1, e=0.0):
-    """
-    Simulate a general stochastic epidemic model.
-
+def simulate_sem(beta, gamma, population_size, num_renewals=1, lag=0.0):
+    """Simulate a stochastic SIR epidemic model.
+    
+    Implements an event-driven (Gillespie) algorithm for simulating a stochastic
+    SIR epidemic with optional exposure lag and multiple infection stages.
+    
     Parameters
     ----------
     beta : float
-        Infection rate.
+        Infection rate parameter. The force of infection is beta * S * I / N.
     gamma : float
-        Removal rate.
-    N : int
-        Population size.
-    m : int, optional
-        Positive shape parameter (number of renewal stages until removal), default = 1.
-    e : float, optional
-        Fixed exposure period, default = 0.
-
+        Removal rate per infectious individual.
+    population_size : int
+        Population size (N).
+    num_renewals : int, default 1
+        Number of infection stages until removal. Implements a renewal process
+        where an individual must go through num_renewals events before removal.
+        Corresponds to Negative Binomial infectious period distribution with
+        shape num_renewals.
+    lag : float, default 0.0
+        Fixed incubation period (exposed-to-infectious lag). When exposed at
+        time t, individual becomes infectious at time t + lag.
+    
     Returns
     -------
-    dict
-        'matrix_time': (N x 2) NumPy array of infection and removal times.
-        'matrix_record': (T x 5) NumPy array of (St, It, Et, Rt, Time) over time.
+    result : dict
+        Dictionary with keys:
+        
+        - 'matrix_time' : ndarray, shape (population_size, 2)
+            Columns: [infection_time, removal_time] for each individual.
+            Non-infected individuals have infection_time = Inf, removal_time = Inf.
+        
+        - 'matrix_record' : ndarray, shape (num_events, 5)
+            Columns: [St, Et, It, Rt, Time] recording susceptible, exposed,
+            infectious, removed counts and elapsed time after each event.
+    
+    Notes
+    -----
+    The simulation initializes with one random individual exposed at time 0.
+    The epidemic continues until all individuals are either susceptible or removed.
+    
+    References
+    ----------
+    Gillespie, D. T. (1976). A general method for numerically simulating the stochastic
+    time evolution of coupled chemical reactions. Journal of Computational Physics, 22, 403-434.
+    
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from peirrs.simulate import simulate_sem
+    >>> np.random.seed(42)
+    >>> result = simulate_sem(beta=1.5, gamma=1.0, population_size=100)
+    >>> result['matrix_time'].shape
+    (100, 2)
+    >>> result['matrix_record'].shape[1]
+    5
     """
-
-    # Initialization
+    # Input validation
+    if beta <= 0:
+        raise ValueError("beta must be positive")
+    if gamma <= 0:
+        raise ValueError("gamma must be positive")
+    if population_size <= 0:
+        raise ValueError("population_size must be positive")
+    if num_renewals < 1:
+        raise ValueError("num_renewals must be >= 1")
+    if lag < 0:
+        raise ValueError("lag must be non-negative")
+    
+    # Initialize arrays
     t = 0.0
-    betaN = beta / N
-    i = np.full(N, np.inf)   # infection times
-    r = np.full(N, np.inf)   # removal times
-    M = np.zeros(N, dtype=int)  # renewal counters
-
-    # Initial infection
-    alpha = np.random.randint(0, N)
-    i[alpha] = t
-
-    # Initialize counts
-    St = np.sum(np.isinf(i))
-    It = np.sum(np.isfinite(i)) - np.sum(np.isfinite(r))
+    betaN = beta / population_size
+    infections = np.full(population_size, np.inf)
+    removals = np.full(population_size, np.inf)
+    renewals = np.zeros(population_size, dtype=int)
+    
+    # Initial infection: one random individual exposed at t=0
+    alpha = np.random.randint(0, population_size)
+    infections[alpha] = t
+    
+    # Initialize compartment counts
+    St = np.sum(np.isinf(infections))
+    It = np.sum(np.isfinite(infections)) - np.sum(np.isfinite(removals))
     Et = 0
     Rt = 0
-
+    
     # Recording vectors
-    Srecording = [St]
-    Irecording = [It]
-    Erecording = [Et]
-    Rrecording = [Rt]
-    Trecording = [t]
-    ctr = 1
-
+    susceptible_recording = [St]
+    exposed_recording = [Et]
+    infectious_recording = [It]
+    removal_recording = [Rt]
+    time_recording = [t]
+    
     # Main simulation loop
     while (It > 0) or (Et > 0):
-        # Closest infectious time after exposure
-        mask_infectious = np.isinf(r) & np.isfinite(i) & (i > t)
-        min_time = np.min(i[mask_infectious]) if np.any(mask_infectious) else np.inf
-
+        # Find the closest time when an exposed person becomes infectious
+        mask_infectious = np.isinf(removals) & np.isfinite(infections) & (infections > t)
+        min_time = np.min(infections[mask_infectious]) if np.any(mask_infectious) else np.inf
+        
         if It == 0:
-            # No infecteds but there are exposeds
+            # No infectious individuals, advance to next exposure becoming infectious
             t = min_time + np.finfo(float).eps
         else:
-            # Simulate event time
-            irate = betaN * It * St
-            rrate = gamma * It
-            t += np.random.exponential(1.0 / (irate + rrate))
-
+            # Calculate event rates
+            irate = betaN * It * St  # infection rate
+            rrate = gamma * It       # removal rate
+            total_rate = irate + rrate
+            
+            # Sample next event time
+            t += np.random.exponential(1.0 / total_rate)
+            
             if t > min_time:
-                # Update time to make an exposed infectious
+                # Next exposed individual becomes infectious before next event
                 t = min_time + np.finfo(float).eps
             else:
-                # Infection or removal occurs
-                x = np.random.binomial(1, rrate / (irate + rrate))
-                x = (x + 1) % 2  # x==1 means infection event
-
-                if x:
-                    # Infect a susceptible
-                    susceptible_indices = np.where(np.isinf(i))[0]
+                # Event occurs: infection or removal
+                # Probability of removal given event
+                prob_removal = rrate / total_rate
+                x = np.random.binomial(1, prob_removal)
+                
+                if x == 0:
+                    # Infection event: expose a susceptible
+                    susceptible_indices = np.where(np.isinf(infections))[0]
                     if len(susceptible_indices) > 0:
                         argx = np.random.choice(susceptible_indices)
-                        i[argx] = t + e  # infection time (after exposure)
+                        infections[argx] = t + lag
                 else:
-                    # Remove an infected
-                    infected_indices = np.where(np.isinf(r) & np.isfinite(i) & (i <= t))[0]
-                    if len(infected_indices) == 0:
-                        break  # No more infecteds
-                    argx = np.random.choice(infected_indices)
-                    M[argx] += 1
-                    if M[argx] == m:
-                        r[argx] = t
-
+                    # Removal event: remove an infectious individual
+                    infectious_indices = np.where(np.isinf(removals) & 
+                                                 np.isfinite(infections) & 
+                                                 (infections <= t))[0]
+                    if len(infectious_indices) == 0:
+                        break
+                    argx = np.random.choice(infectious_indices)
+                    renewals[argx] += 1
+                    if renewals[argx] == num_renewals:
+                        removals[argx] = t
+        
         # Update compartment counts
-        St = np.sum(np.isinf(i))
-        It = np.sum(np.isfinite(i) & (i <= t)) - np.sum(np.isfinite(r))
-        Rt = np.sum(np.isfinite(i) & np.isfinite(r))
-        Et = np.sum(np.isfinite(i) & (i > t))
-
-        if (St + It + Et + Rt) != N:
-            raise ValueError("S(t) + I(t) + E(t) + R(t) do not equal N")
-
+        St = np.sum(np.isinf(infections))
+        It = np.sum(np.isfinite(infections) & (infections <= t)) - np.sum(np.isfinite(removals))
+        Rt = np.sum(np.isfinite(infections) & np.isfinite(removals))
+        Et = np.sum(np.isfinite(infections) & (infections > t))
+        
+        # Validate counts
+        if (St + It + Et + Rt) != population_size:
+            raise ValueError("S(t) + I(t) + E(t) + R(t) do not equal population_size")
+        
         # Record values
-        Srecording.append(St)
-        Irecording.append(It)
-        Erecording.append(Et)
-        Rrecording.append(Rt)
-        Trecording.append(t)
-        ctr += 1
+        susceptible_recording.append(St)
+        exposed_recording.append(Et)
+        infectious_recording.append(It)
+        removal_recording.append(Rt)
+        time_recording.append(t)
     
-    # convert to structured arrays with named columns
-    matrix_time = np.rec.fromarrays([i, r],
-                                    names='infection_time,removal_time',
-                                    formats='f8,f8')
-    matrix_record = np.rec.fromarrays([Srecording, 
-                                       Irecording, 
-                                       Erecording, 
-                                       Rrecording, 
-                                       Trecording],
-                                      names='S,I,E,R,Time',
-                                      formats='i8,i8,i8,i8,f8')
+    # Validate that removal times >= infection times
+    complete_mask = np.isfinite(removals) & np.isfinite(infections)
+    infectious_periods_valid = removals[complete_mask] - infections[complete_mask]
+    if np.any(infectious_periods_valid < 0):
+        raise ValueError("At least one removal time is before infection time")
     
-    return {'matrix_time': matrix_time,
-            'matrix_record': matrix_record}
-
-# utility functions for epidemic data manipulation
-
-def sort_sem(epi):
-    """
-    Sort epidemic structured array by increasing removal times.
-
-    Parameters
-    ----------
-    epi : np.recarray or np.ndarray
-        Structured array with fields:
-        - 'infection_time' (infection time)
-        - 'removal_time' (removal time)
-        - optional 'classes'
-
-    Returns
-    -------
-    np.recarray
-        Sorted structured array (by 'removal_time'), preserving field names.
-    """
-    # Sort indices by removal times
-    order = np.argsort(epi['removal_time'])
+    # Format output as 2D arrays
+    matrix_time = np.column_stack((infections, removals))
+    matrix_record = np.column_stack((susceptible_recording,
+                                     exposed_recording,
+                                     infectious_recording,
+                                     removal_recording,
+                                     time_recording))
     
-    # Apply ordering — preserves named fields
-    epi_sorted = epi[order]
+    return {
+        'matrix_time': matrix_time,
+        'matrix_record': matrix_record
+    }
+
+
+
+def simulator(beta, gamma, population_size, num_renewals=1, lag=0.0,
+              prop_complete=0.5, prop_infection_missing=1.0,
+              min_epidemic_size=10, max_epidemic_size=np.inf):
+    """Simulate complete epidemic with post-processing.
     
-    return epi_sorted
-
-def filter_sem(epi):
-    """
-    Filter epidemic data to keep only cases with finite removal times.
-
-    Parameters
-    ----------
-    epi : np.recarray
-        Structured array with fields:
-        - 'infection_time' (infection times)
-        - 'removal_time' (removal times)
-        - optional 'classes'
-
-    Returns
-    -------
-    np.recarray
-        Structured array containing only rows where 'removal_time' is finite.
-    """
-    # Mask for finite removal times
-    mask = np.isfinite(epi['removal_time'])
+    Repeatedly simulates epidemics until the observed size falls within specified
+    bounds and there are enough complete observations to estimate the removal rate.
     
-    # Apply mask — preserves all fields
-    epi_filtered = epi[mask]
+    The output is post-processed by:
+    1. Filtering to keep only infected individuals
+    2. Introducing missingness (NaN values)
+    3. Sorting by removal time
     
-    return epi_filtered
-
-
-def decomplete_sem(epi, p, q=1.0):
-    """
-    Randomly introduce missing infection or removal times to simulate incomplete epidemic data.
-
-    Parameters
-    ----------
-    epi : np.recarray
-        Structured array with fields:
-        - 'infection_time' (infection times)
-        - 'removal_time' (removal times)
-        - optional 'classes'
-    p : float
-        Expected proportion of complete pairs observed (probability that both infection
-        and removal times are present).
-    q : float, optional
-        Probability that infection time is missing (given that one is missing).
-        Default is 1 (infection time always missing when incomplete).
-
-    Returns
-    -------
-    np.recarray
-        Structured array with some infection and/or removal times set to np.nan.
-    """
-    # Make a copy to avoid modifying input in place
-    epi_out = epi.copy()
-
-    n = len(epi_out)
-    for j in range(n):
-        # With probability (1 - p), make data incomplete
-        if np.random.binomial(1, 1 - p):
-            # With probability q, remove infection time; else, remove removal time
-            if np.random.binomial(1, q):
-                epi_out['infection_time'][j] = np.nan
-            else:
-                epi_out['removal_time'][j] = np.nan
-
-    return epi_out
-
-import numpy as np
-
-def simulate(beta, gamma, N, m=1, e=0.0, p=0.0, q=1.0):
-    """
-    Simulate a general stochastic epidemic model and format the output.
-
     Parameters
     ----------
     beta : float
         Infection rate.
     gamma : float
         Removal rate.
-    N : int
+    population_size : int
         Population size.
-    m : int, optional
-        Positive shape parameter (number of renewals until removal), default = 1.
-    e : float, optional
-        Fixed exposure period, default = 0.
-    p : float, optional
-        Expected proportion of complete pairs observed (1 - p fraction missing), default = 0.
-    q : float, optional
-        Probability infection time missing (given incomplete), default = 1.
-
+    num_renewals : int, default 1
+        Number of infection stages before removal.
+    lag : float, default 0.0
+        Fixed incubation period.
+    prop_complete : float, default 0.5
+        Expected proportion of complete infection-removal pairs. Must be > 0.
+    prop_infection_missing : float, default 1.0
+        Probability that missing time is infection time (vs removal time).
+    min_epidemic_size : int, default 10
+        Minimum number of infected individuals required.
+    max_epidemic_size : float, default np.inf
+        Maximum number of infected individuals allowed.
+    
     Returns
     -------
-    dict
-        {
-            'matrix_time': structured array with infection/removal times (and optional classes),
-            'matrix_record': ndarray of (St, It, Et, Rt, Time)
-        }
+    result : dict
+        Dictionary with keys:
+        
+        - 'matrix_time' : ndarray, shape (n_infected, 2)
+            [infection_times, removal_times] sorted by removal time,
+            with some values set to NaN (missing).
+        
+        - 'matrix_record' : ndarray, shape (num_events, 5)
+            Time-indexed recording of [St, Et, It, Rt, Time].
+    
+    Raises
+    ------
+    ValueError
+        If prop_complete <= 0 (no complete pairs possible).
+    
+    Notes
+    -----
+    This function is useful for generating realistic epidemic data with
+    incomplete observation. It ensures sufficient data to estimate parameters.
+    
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from peirrs.simulate import simulator
+    >>> np.random.seed(42)
+    >>> epi = simulator(beta=2.0, gamma=1.5, population_size=100,
+    ...                 prop_complete=0.8, min_epidemic_size=20)
+    >>> epi['matrix_time'].shape
+    (20, 2)
+    >>> np.sum(np.isnan(epi['matrix_time'])) > 0  # Has missing values
+    True
     """
-
-    # --- Step 1: Simulate epidemic ---
-    epi = simulate_sem(beta, gamma, N, m, e)
-
-    # --- Step 2: Introduce missing values ---
-    epi_time = decomplete_sem(epi_time, p, q)
-
-    # --- Step 3: Filter cases with finite removal times ---
-    epi_time = filter_sem(epi_time)
-
-    # --- Step 4: Sort by removal times ---
-    epi_time = sort_sem(epi_time)
-
-    # --- Step 5: Return formatted result ---
+    if prop_complete <= 0:
+        raise ValueError("prop_complete must be > 0 (need complete pairs to estimate gamma)")
+    if not (0.0 <= prop_infection_missing <= 1.0):
+        raise ValueError("prop_infection_missing must be in [0, 1]")
+    if min_epidemic_size < 1:
+        raise ValueError("min_epidemic_size must be >= 1")
+    if max_epidemic_size < min_epidemic_size:
+        raise ValueError("max_epidemic_size must be >= min_epidemic_size")
+    
+    sample_size = 0
+    gamma_estimate = np.nan
+    
+    while (sample_size < min_epidemic_size or 
+           sample_size > max_epidemic_size or 
+           np.isnan(gamma_estimate)):
+        
+        # Simulate epidemic
+        epidemic = simulate_sem(beta, gamma, population_size, num_renewals, lag)
+        matrix_time = epidemic['matrix_time']
+        
+        # Filter to keep infected only
+        matrix_time = utils.filter_sem(matrix_time)
+        
+        # Introduce missingness
+        matrix_time = utils.decomplete_sem(matrix_time, 
+                                          prop_complete=prop_complete,
+                                          prop_infection_missing=prop_infection_missing)
+        
+        # Sort by removal time
+        matrix_time = utils.sort_sem(matrix_time)
+        
+        # Check sample size
+        sample_size = matrix_time.shape[0]
+        
+        # Try to estimate gamma to ensure there are complete pairs
+        removals = matrix_time[:, 1]
+        infections = matrix_time[:, 0]
+        gamma_estimate = peirr_removal_rate(removals, infections)
+    
     return {
-        "matrix_time": epi_time,
-        "matrix_record": epi["matrix_record"]
+        'matrix_time': matrix_time,
+        'matrix_record': epidemic['matrix_record']
     }
 
