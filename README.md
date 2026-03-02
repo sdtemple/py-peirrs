@@ -4,6 +4,10 @@
 
 <img src="icon.png" align="center" width="300px"/>
 
+---
+
+This Python package is an AI-translated version of the R package `github.com/sdtemple/peirrs`.
+
 ## Install
 
 **From PyPI (recommended)**
@@ -30,7 +34,7 @@ This package requires Python 3.6+ with the following dependencies:
 
 I developed the package with versions:
 - Python 3.9+
-- NumPy 1.21+
+- NumPy 2.0+
 - SciPy 1.7+
 
 ## Usage
@@ -68,7 +72,7 @@ There are also functions with the suffixes `_multitype()` and `_spatial()` for e
 
 The `peirr_bootstrap()` function does not provide confidence intervals but rather bootstrap samples. You can perform bias correction or interval estimation according to [Wikipedia](https://en.wikipedia.org/wiki/Bootstrapping_(statistics)#Deriving_confidence_intervals_from_the_bootstrap_distribution).
 
-**Warning**
+**Warning !!!**
 - I used AI chatbots to translate this from an R package.
     - Mostly as a personal experiment ...
 - PBLA functions are not available.
@@ -78,4 +82,4 @@ The `peirr_bootstrap()` function does not provide confidence intervals but rathe
     - Manually fixes to the `utils.tau_moment` function
     - Manually fixed to the `_bayes` functions
 - I checked that some simulation study results were similar.
-- I checked for sensible results in small IPython notebook.
+- I checked for sensible results in a small IPython notebook.
