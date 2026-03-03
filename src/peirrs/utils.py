@@ -303,7 +303,7 @@ def tau_moment(rk, rj, ik, ij, lambdak, lambdaj, lag=0.0):
             h6 = (np.exp(-lambdaj * (rj - ik)) - lambdaj * (ik - rj) - 1) / lambdaj
             return h6
         else:
-            h8 = (rk - ik) * scipy.stats.expon.sf(rj - rk, scale=1/lambdaj)
+            h8 = (rk - ik) * scipy.stats.expon.cdf(rj - rk, scale=1/lambdaj)
             h7 = (np.exp(-lambdaj * rj) * 
                   (np.exp(lambdaj * ik) + 
                    np.exp(lambdaj * rk) * 

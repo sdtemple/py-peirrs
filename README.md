@@ -82,4 +82,7 @@ The `peirr_bootstrap()` function does not provide confidence intervals but rathe
     - Manually fixes to the `utils.tau_moment` function
     - Manually fixed to the `_bayes` functions
 - I checked that some simulation study results were similar.
+    - The results are qualitatively the same.
+    - But, the estimator computes adds many small float numbers.
+    - The snowball effect leads to some slight differences between Python and R estimates.
 - I checked for sensible results in a small IPython notebook.
