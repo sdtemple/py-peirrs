@@ -355,9 +355,9 @@ def tau_moment(rk, rj, ik, ij, lambdak, lambdaj, lag=0.0):
             h27 = rj - ik
         else:
             h15 = (lambdak / ((lambdaj - lambdak)**2) * 
-                   (func1(rj, lambdak, lambdaj) - func1(ik, lambdak, lambdaj)))
+                   (func1(ik, lambdak, lambdaj) - func1(rj, lambdak, lambdaj)))
             h14 = h15
-            h13 = (func2(ik, lambdak, lambdaj) - func2(rj, lambdak, lambdaj))
+            h13 = (func2(rj, lambdak, lambdaj) - func2(ik, lambdak, lambdaj))
             h27 = ((np.exp((lambdaj - lambdak) * rj) - 
                     np.exp((lambdaj - lambdak) * ik)) / (lambdaj - lambdak))
         
@@ -388,7 +388,7 @@ def tau_moment(rk, rj, ik, ij, lambdak, lambdaj, lag=0.0):
              h22 = (rj**2 - ik**2) / 2
              h25 = rj - ik
         else:
-             h24 = ((func1(rj, lambdak, lambdaj) - func1(ik, lambdak, lambdaj)) /
+             h24 = ((func1(ik, lambdak, lambdaj) - func1(rj, lambdak, lambdaj)) /
                  ((lambdaj - lambdak)**2))
              h22 = h24
              h25 = ((np.exp((lambdaj - lambdak) * rj) -
